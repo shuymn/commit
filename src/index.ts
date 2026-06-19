@@ -1,1 +1,1 @@
-console.log("bun-template ready");
+console.log("commit ready");
