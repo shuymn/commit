@@ -1,4 +1,5 @@
 import type { AgentSessionEvent, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import {
   ASK_USER_QUESTION_TOOL_NAME,
   createAskUserQuestionTool,
@@ -13,7 +14,7 @@ import {
 
 export type CommitWorkflowIo = {
   readonly stdout: { write: (chunk: string) => unknown };
-  readonly stderr: { write: (chunk: string) => unknown };
+  readonly stderr: { write: (chunk: string) => unknown; readonly columns?: number };
 };
 
 export type CommitWorkflowSession = {
@@ -96,16 +97,23 @@ export function streamCommitWorkflowEvent(event: AgentSessionEvent, io: CommitWo
   }
 
   if (event.type === "tool_execution_start") {
-    io.stderr.write(`\n[tool] ${event.toolName}\n`);
+    io.stderr.write(
+      `\n${renderToolStatus(io.stderr, event.toolName, ["running", getToolSummary(event.args)])}`,
+    );
     return;
   }
 
   if (event.type === "tool_execution_end" && event.isError) {
-    const errorText = extractToolResultText(event.result);
+    const errorText = extractToolResultText(event.result).trimEnd();
     io.stderr.write(
-      errorText.length > 0
-        ? `[tool] ${event.toolName} failed\n${errorText}\n`
-        : `[tool] ${event.toolName} failed\n`,
+      renderToolStatus(
+        io.stderr,
+        `${event.toolName} failed`,
+        errorText.length > 0 ? errorText : "no output",
+        {
+          bodyMode: "wrap",
+        },
+      ),
     );
   }
 }
@@ -132,6 +140,82 @@ export function getQuestionToolFailure(event: AgentSessionEvent): string | undef
   }
 
   return undefined;
+}
+
+function renderToolStatus(
+  terminal: { readonly columns?: number },
+  title: string,
+  body: string | readonly (string | undefined)[],
+  options: { readonly bodyMode?: "truncate" | "wrap" } = {},
+): string {
+  const width = normalizeTerminalWidth(terminal.columns);
+  return `${renderToolStatusLines(title, body, options.bodyMode ?? "truncate", width).join("\n")}\n`;
+}
+
+function normalizeTerminalWidth(columns: number | undefined): number {
+  return typeof columns === "number" && Number.isFinite(columns) && columns > 0
+    ? Math.max(2, Math.floor(columns))
+    : 80;
+}
+
+function renderToolStatusLines(
+  title: string,
+  body: string | readonly (string | undefined)[],
+  bodyMode: "truncate" | "wrap",
+  width: number,
+): string[] {
+  const contentWidth = Math.max(1, width - 2);
+
+  return [
+    truncateToWidth(`╭─ ${title}`, width),
+    ...renderToolStatusBodyLines(body, bodyMode, width, contentWidth),
+    truncateToWidth("╰─".padEnd(contentWidth, "─"), width),
+  ];
+}
+
+function renderToolStatusBodyLines(
+  body: string | readonly (string | undefined)[],
+  bodyMode: "truncate" | "wrap",
+  width: number,
+  contentWidth: number,
+): string[] {
+  const bodyLines =
+    typeof body === "string"
+      ? body.split("\n")
+      : body.filter((line): line is string => line !== undefined && line.length > 0);
+
+  if (bodyMode === "truncate") {
+    return bodyLines.map((line) => truncateToWidth(`│ ${line}`, width));
+  }
+
+  return bodyLines.flatMap((line) =>
+    wrapTextWithAnsi(line, contentWidth).map((wrappedLine) => `│ ${wrappedLine}`),
+  );
+}
+
+function getToolSummary(args: unknown): string | undefined {
+  if (!isObjectRecord(args)) {
+    return undefined;
+  }
+
+  if (typeof args.command === "string") {
+    return `$ ${singleLine(args.command)}`;
+  }
+
+  if (typeof args.path === "string") {
+    return args.path;
+  }
+
+  if (typeof args.query === "string") {
+    return singleLine(args.query);
+  }
+
+  return undefined;
+}
+
+function singleLine(text: string): string {
+  const collapsed = text.replace(/\s+/g, " ").trim();
+  return collapsed.length > 120 ? `${collapsed.slice(0, 117)}...` : collapsed;
 }
 
 function extractToolResultText(result: unknown): string {

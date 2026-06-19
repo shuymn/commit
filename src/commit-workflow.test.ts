@@ -10,6 +10,9 @@ import {
 } from "./commit-workflow";
 import { COMMIT_AGENT_TOOL_NAMES, type CommitAgentSessionOptions } from "./pi-session";
 
+const DEFAULT_TOOL_STATUS_BORDER =
+  "╰─────────────────────────────────────────────────────────────────────────────\n";
+
 describe("buildCommitSkillPrompt", () => {
   test("maps empty options to a forced commit skill invocation", () => {
     expect(buildCommitSkillPrompt({ branch: false })).toBe("/skill:commit");
@@ -66,7 +69,7 @@ describe("streamCommitWorkflowEvent", () => {
         type: "tool_execution_start",
         toolCallId: "tool-1",
         toolName: "bash",
-        args: {},
+        args: { command: "git status --short" },
       },
       {
         stdout: {
@@ -83,7 +86,9 @@ describe("streamCommitWorkflowEvent", () => {
     );
 
     expect(stdout).toBe("");
-    expect(stderr).toBe("\n[tool] bash\n");
+    expect(stderr).toBe(
+      `\n╭─ bash\n│ running\n│ $ git status --short\n${DEFAULT_TOOL_STATUS_BORDER}`,
+    );
   });
 
   test("prints error tool text to stderr", () => {
@@ -107,7 +112,60 @@ describe("streamCommitWorkflowEvent", () => {
       },
     );
 
-    expect(stderr).toBe("[tool] bash failed\nhook failed\n");
+    expect(stderr).toBe(`╭─ bash failed\n│ hook failed\n${DEFAULT_TOOL_STATUS_BORDER}`);
+  });
+
+  test("falls back safely for invalid terminal widths", () => {
+    let stderr = "";
+
+    expect(() =>
+      streamCommitWorkflowEvent(
+        {
+          type: "tool_execution_start",
+          toolCallId: "tool-1",
+          toolName: "bash",
+          args: { command: "git status --short" },
+        },
+        {
+          stdout: { write: () => undefined },
+          stderr: {
+            columns: Number.POSITIVE_INFINITY,
+            write: (chunk) => {
+              stderr += chunk;
+            },
+          },
+        },
+      ),
+    ).not.toThrow();
+
+    expect(stderr).toContain(DEFAULT_TOOL_STATUS_BORDER);
+  });
+
+  test("wraps long error output without dropping diagnostics", () => {
+    let stderr = "";
+    const errorText = `compile failed ${"because ".repeat(8)}at src/commit-workflow.ts:123`;
+
+    streamCommitWorkflowEvent(
+      {
+        type: "tool_execution_end",
+        toolCallId: "tool-1",
+        toolName: "bash",
+        result: { content: [{ type: "text", text: errorText }], details: {} },
+        isError: true,
+      },
+      {
+        stdout: { write: () => undefined },
+        stderr: {
+          columns: 32,
+          write: (chunk) => {
+            stderr += chunk;
+          },
+        },
+      },
+    );
+
+    expect(stderr).toContain("src/commit-workflow.ts:123");
+    expect(stderr).not.toContain("...");
   });
 });
 
