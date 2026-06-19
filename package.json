@@ -3,8 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "commit": "./src/index.ts"
+  },
   "scripts": {
     "postinstall": "lefthook install",
+    "start": "bun run src/index.ts",
     "lint": "bunx biome lint .",
     "lint:fix": "bunx biome lint --fix .",
     "fmt:fix": "bunx biome format --write .",
@@ -22,5 +26,9 @@
     "@types/bun": "1.3.14",
     "lefthook": "2.1.9",
     "typescript": "6.0.3"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.79.6",
+    "typebox": "1.1.38"
   }
 }
