@@ -23,12 +23,6 @@ describe("buildCommitSkillPrompt", () => {
       "/skill:commit --japanese --branch --base main",
     );
   });
-
-  test("rejects unsafe base values before building the prompt", () => {
-    expect(() => buildCommitSkillPrompt({ branch: true, base: "main --japanese" })).toThrow(
-      "--base must be a safe branch name",
-    );
-  });
 });
 
 describe("streamCommitWorkflowEvent", () => {

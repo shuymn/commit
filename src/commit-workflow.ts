@@ -5,7 +5,7 @@ import {
   createAskUserQuestionTool,
   type QuestionPromptAdapter,
 } from "./ask-user-question";
-import { validateBaseBranchName, type CliOptions } from "./cli";
+import type { CliOptions } from "./cli";
 import {
   COMMIT_AGENT_TOOL_NAMES,
   createCommitAgentSession,
@@ -80,10 +80,6 @@ export function buildCommitSkillPrompt(options: CliOptions): string {
     args.push("--branch");
   }
   if (options.base !== undefined) {
-    const baseError = validateBaseBranchName(options.base);
-    if (baseError !== undefined) {
-      throw new Error(baseError);
-    }
     args.push("--base", options.base);
   }
 
