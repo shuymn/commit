@@ -1,17 +1,10 @@
 #!/usr/bin/env bun
-import type { CliOptions } from "./cli";
+import type { CommitWorkflowIo, RunCommitWorkflowOptions } from "./commit-workflow";
 import { formatUsage, parseCliArgs, resolveGitRepositoryCwd } from "./cli";
 
-export type CliIo = {
-  readonly stdout: Pick<typeof process.stdout, "write">;
-  readonly stderr: Pick<typeof process.stderr, "write">;
-};
-
-export type WorkflowRunner = (input: {
-  readonly cwd: string;
-  readonly options: CliOptions;
-  readonly io: CliIo;
-}) => Promise<void>;
+export type WorkflowRunner = (
+  input: Pick<RunCommitWorkflowOptions, "cwd" | "options" | "io">,
+) => Promise<void>;
 
 export type MainDependencies = {
   readonly runWorkflow?: WorkflowRunner;
@@ -20,7 +13,7 @@ export type MainDependencies = {
 export async function main(
   argv: readonly string[] = process.argv.slice(2),
   cwd: string = process.cwd(),
-  io: CliIo = { stdout: process.stdout, stderr: process.stderr },
+  io: CommitWorkflowIo = { stdout: process.stdout, stderr: process.stderr },
   dependencies: MainDependencies = {},
 ): Promise<number> {
   const parsed = parseCliArgs(argv);
