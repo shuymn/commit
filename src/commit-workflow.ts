@@ -94,8 +94,12 @@ export function streamCommitWorkflowEvent(event: AgentSessionEvent, io: CommitWo
   }
 
   if (event.type === "tool_execution_start") {
+    const summary = getToolSummary(event.args);
     io.stderr.write(
-      `\n${renderToolStatus(io.stderr, event.toolName, ["running", getToolSummary(event.args)])}`,
+      `\n${renderToolStatusBox(io.stderr, event.toolName, [
+        "running",
+        ...(summary ? [summary] : []),
+      ])}`,
     );
     return;
   }
@@ -103,13 +107,10 @@ export function streamCommitWorkflowEvent(event: AgentSessionEvent, io: CommitWo
   if (event.type === "tool_execution_end" && event.isError) {
     const errorText = extractToolResultText(event.result).trimEnd();
     io.stderr.write(
-      renderToolStatus(
+      renderToolStatusBox(
         io.stderr,
         `${event.toolName} failed`,
-        errorText.length > 0 ? errorText : "no output",
-        {
-          bodyMode: "wrap",
-        },
+        wrapToolStatusBody(io.stderr, errorText.length > 0 ? errorText : "no output"),
       ),
     );
   }
@@ -139,55 +140,29 @@ export function getQuestionToolFailure(event: AgentSessionEvent): string | undef
   return undefined;
 }
 
-function renderToolStatus(
+function renderToolStatusBox(
   terminal: { readonly columns?: number },
   title: string,
-  body: string | readonly (string | undefined)[],
-  options: { readonly bodyMode?: "truncate" | "wrap" } = {},
+  bodyLines: readonly string[],
 ): string {
   const width = normalizeTerminalWidth(terminal.columns);
-  return `${renderToolStatusLines(title, body, options.bodyMode ?? "truncate", width).join("\n")}\n`;
+  const contentWidth = Math.max(1, width - 2);
+  return `${[
+    truncateToWidth(`╭─ ${title}`, width),
+    ...bodyLines.map((line) => truncateToWidth(`│ ${line}`, width)),
+    truncateToWidth("╰─".padEnd(contentWidth, "─"), width),
+  ].join("\n")}\n`;
+}
+
+function wrapToolStatusBody(terminal: { readonly columns?: number }, body: string): string[] {
+  const contentWidth = Math.max(1, normalizeTerminalWidth(terminal.columns) - 2);
+  return body.split("\n").flatMap((line) => wrapTextWithAnsi(line, contentWidth));
 }
 
 function normalizeTerminalWidth(columns: number | undefined): number {
   return typeof columns === "number" && Number.isFinite(columns) && columns > 0
     ? Math.max(2, Math.floor(columns))
     : 80;
-}
-
-function renderToolStatusLines(
-  title: string,
-  body: string | readonly (string | undefined)[],
-  bodyMode: "truncate" | "wrap",
-  width: number,
-): string[] {
-  const contentWidth = Math.max(1, width - 2);
-
-  return [
-    truncateToWidth(`╭─ ${title}`, width),
-    ...renderToolStatusBodyLines(body, bodyMode, width, contentWidth),
-    truncateToWidth("╰─".padEnd(contentWidth, "─"), width),
-  ];
-}
-
-function renderToolStatusBodyLines(
-  body: string | readonly (string | undefined)[],
-  bodyMode: "truncate" | "wrap",
-  width: number,
-  contentWidth: number,
-): string[] {
-  const bodyLines =
-    typeof body === "string"
-      ? body.split("\n")
-      : body.filter((line): line is string => line !== undefined && line.length > 0);
-
-  if (bodyMode === "truncate") {
-    return bodyLines.map((line) => truncateToWidth(`│ ${line}`, width));
-  }
-
-  return bodyLines.flatMap((line) =>
-    wrapTextWithAnsi(line, contentWidth).map((wrappedLine) => `│ ${wrappedLine}`),
-  );
 }
 
 function getToolSummary(args: unknown): string | undefined {
@@ -239,7 +214,6 @@ function extractToolResultText(result: unknown): string {
 function extractToolResultDetails(result: unknown): unknown {
   return isObjectRecord(result) ? result.details : undefined;
 }
-
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
