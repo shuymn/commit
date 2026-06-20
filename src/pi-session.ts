@@ -139,7 +139,9 @@ async function resolveSkillFile(path: string): Promise<string | undefined> {
   try {
     const stats = await stat(path);
     if (stats.isDirectory()) {
-      return await fileExists(resolve(path, "SKILL.md"));
+      const skillFile = resolve(path, "SKILL.md");
+      await access(skillFile);
+      return skillFile;
     }
     if (stats.isFile() && path.endsWith(".md")) {
       return path;
@@ -149,13 +151,4 @@ async function resolveSkillFile(path: string): Promise<string | undefined> {
   }
 
   return undefined;
-}
-
-async function fileExists(path: string): Promise<string | undefined> {
-  try {
-    await access(path);
-    return path;
-  } catch {
-    return undefined;
-  }
 }
