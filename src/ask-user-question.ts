@@ -80,6 +80,33 @@ export type AskUserQuestionResult =
       readonly errors: readonly string[];
     };
 
+type AskUserQuestionFailureResult = Extract<
+  AskUserQuestionResult,
+  { status: "cancelled" | "error" }
+>;
+
+export function toAskUserQuestionResult(
+  details: unknown,
+): AskUserQuestionFailureResult | undefined {
+  if (!isObjectRecord(details) || typeof details.status !== "string") {
+    return undefined;
+  }
+
+  if (details.status === "cancelled" && typeof details.reason === "string") {
+    return details as AskUserQuestionFailureResult;
+  }
+
+  if (
+    details.status === "error" &&
+    Array.isArray(details.errors) &&
+    details.errors.every((error) => typeof error === "string")
+  ) {
+    return details as AskUserQuestionFailureResult;
+  }
+
+  return undefined;
+}
+
 export function createTerminalQuestionPromptAdapter(
   input: NodeJS.ReadStream = process.stdin,
   output: NodeJS.WriteStream = process.stdout,
@@ -134,6 +161,10 @@ function isInputClosedError(error: unknown): boolean {
   return (
     error instanceof Error && (error.name === "AbortError" || /closed|eof/i.test(error.message))
   );
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 export async function askUserQuestions(
@@ -195,26 +226,18 @@ export function createAskUserQuestionTool(
 export function validateAskUserQuestionInput(input: AskUserQuestionInput): string[] {
   const errors: string[] = [];
 
-  if (!Array.isArray(input.questions) || input.questions.length < 1 || input.questions.length > 4) {
-    errors.push("questions must contain between 1 and 4 items.");
-    return errors;
-  }
-
   input.questions.forEach((question, questionIndex) => {
     const prefix = `questions[${questionIndex}]`;
     if (question.question.trim().length === 0) {
       errors.push(`${prefix}.question must not be empty.`);
     }
-    if (question.header.trim().length === 0 || question.header.length > 16) {
-      errors.push(`${prefix}.header must be 1-16 characters.`);
-    }
-    if (question.options.length < 2 || question.options.length > 4) {
-      errors.push(`${prefix}.options must contain between 2 and 4 items.`);
+    if (question.header.trim().length === 0) {
+      errors.push(`${prefix}.header must not be empty.`);
     }
     question.options.forEach((option, optionIndex) => {
       const optionPrefix = `${prefix}.options[${optionIndex}]`;
-      if (option.label.trim().length === 0 || option.label.length > 60) {
-        errors.push(`${optionPrefix}.label must be 1-60 characters.`);
+      if (option.label.trim().length === 0) {
+        errors.push(`${optionPrefix}.label must not be empty.`);
       }
       if (option.description.trim().length === 0) {
         errors.push(`${optionPrefix}.description must not be empty.`);

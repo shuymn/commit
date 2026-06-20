@@ -5,6 +5,7 @@ import {
   createAskUserQuestionTool,
   createTerminalQuestionPromptAdapter,
   formatAskUserQuestionResultForModel,
+  toAskUserQuestionResult,
   type AskUserQuestionInput,
   type QuestionPromptAdapter,
 } from "./ask-user-question";
@@ -156,6 +157,53 @@ describe("askUserQuestions", () => {
     expect(formatAskUserQuestionResultForModel({ status: "error", errors: ["bad input"] })).toBe(
       "ask_user_question input was invalid:\n- bad input",
     );
+  });
+
+  test("rejects whitespace-only schema strings", async () => {
+    const result = await askUserQuestions(
+      {
+        questions: [
+          singleQuestion({
+            question: " ",
+            header: "\t",
+            options: [
+              { label: " ", description: "Keeps independent changes revertible." },
+              { label: "One commit", description: "\n" },
+            ],
+          }),
+        ],
+      },
+      createMockAdapter(),
+    );
+
+    expect(result).toEqual({
+      status: "error",
+      errors: [
+        "questions[0].question must not be empty.",
+        "questions[0].header must not be empty.",
+        "questions[0].options[0].label must not be empty.",
+        "questions[0].options[1].description must not be empty.",
+      ],
+    });
+  });
+});
+
+describe("toAskUserQuestionResult", () => {
+  test("narrows cancelled and error details by the fields read by consumers", () => {
+    expect(toAskUserQuestionResult({ status: "cancelled", reason: "non_tty" })).toMatchObject({
+      status: "cancelled",
+      reason: "non_tty",
+    });
+    expect(toAskUserQuestionResult({ status: "error", errors: ["bad input"] })).toEqual({
+      status: "error",
+      errors: ["bad input"],
+    });
+  });
+
+  test("rejects malformed details", () => {
+    expect(toAskUserQuestionResult({ status: "cancelled" })).toBeUndefined();
+    expect(toAskUserQuestionResult({ status: "error", errors: [123] })).toBeUndefined();
+    expect(toAskUserQuestionResult({ status: "unknown" })).toBeUndefined();
   });
 });
 
