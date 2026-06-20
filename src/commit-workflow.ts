@@ -3,6 +3,7 @@ import { truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import {
   ASK_USER_QUESTION_TOOL_NAME,
   createAskUserQuestionTool,
+  toAskUserQuestionResult,
   type QuestionPromptAdapter,
 } from "./ask-user-question";
 import type { CliOptions } from "./cli";
@@ -119,13 +120,13 @@ export function getQuestionToolFailure(event: AgentSessionEvent): string | undef
     return undefined;
   }
 
-  const details = extractToolResultDetails(event.result);
-  if (isCancelledQuestionResult(details)) {
-    return `Question required but no answer was available (${details.reason}).`;
+  const result = toAskUserQuestionResult(extractToolResultDetails(event.result));
+  if (result?.status === "cancelled") {
+    return `Question required but no answer was available (${result.reason}).`;
   }
 
-  if (isErroredQuestionResult(details)) {
-    return `Question tool failed: ${details.errors.join("; ")}`;
+  if (result?.status === "error") {
+    return `Question tool failed: ${result.errors.join("; ")}`;
   }
 
   if (event.isError) {
@@ -237,25 +238,6 @@ function extractToolResultText(result: unknown): string {
 
 function extractToolResultDetails(result: unknown): unknown {
   return isObjectRecord(result) ? result.details : undefined;
-}
-
-function isCancelledQuestionResult(
-  details: unknown,
-): details is { readonly status: "cancelled"; readonly reason: string } {
-  return (
-    isObjectRecord(details) && details.status === "cancelled" && typeof details.reason === "string"
-  );
-}
-
-function isErroredQuestionResult(
-  details: unknown,
-): details is { readonly status: "error"; readonly errors: readonly string[] } {
-  return (
-    isObjectRecord(details) &&
-    details.status === "error" &&
-    Array.isArray(details.errors) &&
-    details.errors.every((error) => typeof error === "string")
-  );
 }
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
