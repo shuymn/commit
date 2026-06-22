@@ -1,41 +1,32 @@
 import { createInterface } from "node:readline/promises";
 import { defineTool } from "@earendil-works/pi-coding-agent";
-import { Type, type Static } from "typebox";
+import { Text } from "@earendil-works/pi-tui";
+import {
+  ASK_USER_QUESTION_TOOL_NAME,
+  askUserQuestionParameters,
+  type AskUserQuestion,
+  type AskUserQuestionInput,
+  type AskUserQuestionResult,
+  type AskUserQuestionValidationError,
+  MAX_HEADER_LENGTH,
+  MAX_LABEL_LENGTH,
+  MAX_OPTIONS,
+  MAX_QUESTIONS,
+  MIN_OPTIONS,
+  RESERVED_LABELS,
+  type QuestionAnswer,
+} from "./ask-user-question-types";
 import { isObjectRecord } from "./tool-result";
 
-export const ASK_USER_QUESTION_TOOL_NAME = "ask_user_question";
-
-export const askUserQuestionParameters = Type.Object(
-  {
-    questions: Type.Array(
-      Type.Object(
-        {
-          question: Type.String({ minLength: 1 }),
-          header: Type.String({ minLength: 1, maxLength: 16 }),
-          options: Type.Array(
-            Type.Object(
-              {
-                label: Type.String({ minLength: 1, maxLength: 60 }),
-                description: Type.String({ minLength: 1 }),
-                preview: Type.Optional(Type.String()),
-              },
-              { additionalProperties: false },
-            ),
-            { minItems: 2, maxItems: 4 },
-          ),
-          multiSelect: Type.Optional(Type.Boolean()),
-        },
-        { additionalProperties: false },
-      ),
-      { minItems: 1, maxItems: 4 },
-    ),
-  },
-  { additionalProperties: false },
-);
-
-export type AskUserQuestionInput = Static<typeof askUserQuestionParameters>;
-export type AskUserQuestion = AskUserQuestionInput["questions"][number];
-export type AskUserQuestionOption = AskUserQuestion["options"][number];
+export {
+  ASK_USER_QUESTION_TOOL_NAME,
+  askUserQuestionParameters,
+  type AskUserQuestion,
+  type AskUserQuestionInput,
+  type AskUserQuestionOption,
+  type AskUserQuestionResult,
+  type QuestionAnswer,
+} from "./ask-user-question-types";
 
 export type QuestionPromptAdapter = {
   readonly isInteractive: () => boolean;
@@ -43,49 +34,30 @@ export type QuestionPromptAdapter = {
   readonly readLine: (prompt: string) => Promise<string | undefined>;
 };
 
-export type SelectedQuestionOption = {
-  readonly index: number;
-  readonly label: string;
-  readonly description: string;
+export type AskUserQuestionPresenter = (
+  input: AskUserQuestionInput,
+) => Promise<AskUserQuestionResult>;
+
+export type CreateAskUserQuestionToolOptions = {
+  readonly promptAdapter?: QuestionPromptAdapter;
+  readonly presenter?: AskUserQuestionPresenter;
 };
 
-export type QuestionAnswer =
-  | {
-      readonly questionIndex: number;
-      readonly header: string;
-      readonly question: string;
-      readonly type: "options";
-      readonly selectedOptions: readonly SelectedQuestionOption[];
-    }
-  | {
-      readonly questionIndex: number;
-      readonly header: string;
-      readonly question: string;
-      readonly type: "freeform";
-      readonly text: string;
-    };
-
-export type AskUserQuestionResult =
-  | {
-      readonly status: "answered";
-      readonly answers: readonly QuestionAnswer[];
-    }
-  | {
-      readonly status: "cancelled";
-      readonly reason: "non_tty" | "user_cancelled" | "input_closed";
-      readonly answers: readonly QuestionAnswer[];
-      readonly pendingQuestions: readonly AskUserQuestion[];
-    }
-  | {
-      readonly status: "error";
-      readonly errors: readonly string[];
-    };
-
-// Failure shape consumed by the workflow. Narrowed to exactly the fields read
-// by callers so the decoder validates everything it returns (no wider cast).
 export type QuestionToolFailure =
-  | { readonly status: "cancelled"; readonly reason: string }
-  | { readonly status: "error"; readonly errors: readonly string[] };
+  | { readonly status: "cancelled"; readonly reason: string; readonly error?: string }
+  | { readonly status: "error"; readonly errors: readonly string[]; readonly error?: string };
+
+type ValidationResult =
+  | { readonly ok: true }
+  | {
+      readonly ok: false;
+      readonly error: AskUserQuestionValidationError;
+      readonly message: string;
+    };
+
+const ROOT_KEYS = ["questions"] as const;
+const QUESTION_KEYS = ["question", "header", "options", "multiSelect"] as const;
+const OPTION_KEYS = ["label", "description", "preview"] as const;
 
 export function toAskUserQuestionResult(details: unknown): QuestionToolFailure | undefined {
   if (!isObjectRecord(details) || typeof details.status !== "string") {
@@ -93,7 +65,11 @@ export function toAskUserQuestionResult(details: unknown): QuestionToolFailure |
   }
 
   if (details.status === "cancelled" && typeof details.reason === "string") {
-    return { status: "cancelled", reason: details.reason };
+    return {
+      status: "cancelled",
+      reason: details.reason,
+      ...(typeof details.error === "string" ? { error: details.error } : {}),
+    };
   }
 
   if (
@@ -101,7 +77,11 @@ export function toAskUserQuestionResult(details: unknown): QuestionToolFailure |
     Array.isArray(details.errors) &&
     details.errors.every((error): error is string => typeof error === "string")
   ) {
-    return { status: "error", errors: details.errors };
+    return {
+      status: "error",
+      errors: details.errors,
+      ...(typeof details.error === "string" ? { error: details.error } : {}),
+    };
   }
 
   return undefined;
@@ -158,8 +138,6 @@ export function createTerminalQuestionPromptAdapter(
 }
 
 function isInputClosedError(error: unknown): boolean {
-  // Only treat the readline abort signal as a clean close; let any other
-  // rejection surface instead of guessing from the message text.
   return isObjectRecord(error) && error.name === "AbortError";
 }
 
@@ -167,9 +145,9 @@ export async function askUserQuestions(
   input: AskUserQuestionInput,
   adapter: QuestionPromptAdapter = createTerminalQuestionPromptAdapter(),
 ): Promise<AskUserQuestionResult> {
-  const errors = validateAskUserQuestionInput(input);
-  if (errors.length > 0) {
-    return { status: "error", errors };
+  const validation = validateAskUserQuestionInput(input);
+  if (!validation.ok) {
+    return errorResult(input, validation.message, validation.error);
   }
 
   if (!adapter.isInteractive()) {
@@ -195,66 +173,255 @@ export async function askUserQuestions(
     answers.push(answer.answer);
   }
 
-  return { status: "answered", answers };
+  return completedResult(answers);
 }
 
 export function createAskUserQuestionTool(
-  adapter: QuestionPromptAdapter = createTerminalQuestionPromptAdapter(),
+  optionsOrAdapter: CreateAskUserQuestionToolOptions | QuestionPromptAdapter = {},
 ) {
+  const options =
+    "isInteractive" in optionsOrAdapter ? { promptAdapter: optionsOrAdapter } : optionsOrAdapter;
+  const promptAdapter = options.promptAdapter ?? createTerminalQuestionPromptAdapter();
+
   return defineTool({
     name: ASK_USER_QUESTION_TOOL_NAME,
-    label: "Ask User",
+    label: "Ask User Question",
     description:
-      "Ask the user bounded questions with listed options, optional multi-select, and free-form fallback.",
+      "Ask the user bounded structured questions with listed options, optional multi-select, and custom-answer fallback.",
+    promptSnippet:
+      "Ask the user up to 4 structured questions when implementation-relevant requirements or decisions are ambiguous",
+    promptGuidelines: [
+      "Use ask_user_question only when ambiguity materially affects implementation, architecture, scope, data loss, or user-visible behavior.",
+      "Each question must have 2-4 options. Each option must have a concise label and a description explaining the trade-off.",
+      "Use multiSelect: true only when multiple listed answers can be valid.",
+      "Option previews are supported only for single-select questions.",
+      "If you recommend a specific option, make it the first option and append '(Recommended)' to the label.",
+    ],
     parameters: askUserQuestionParameters,
     executionMode: "sequential",
     execute: async (_toolCallId, params) => {
-      const result = await askUserQuestions(params, adapter);
+      const result =
+        options.presenter !== undefined
+          ? await options.presenter(params)
+          : await askUserQuestions(params, promptAdapter);
       return {
         content: [{ type: "text", text: formatAskUserQuestionResultForModel(result) }],
         details: result,
-        terminate: result.status !== "answered" ? true : undefined,
+        terminate: result.status !== "completed" ? true : undefined,
       };
+    },
+    renderCall(args, theme) {
+      const questions = Array.isArray((args as Partial<AskUserQuestionInput>).questions)
+        ? ((args as Partial<AskUserQuestionInput>).questions ?? [])
+        : [];
+      const labels = questions.map((question) => question.header || question.question).join(", ");
+      return new Text(
+        theme.fg("toolTitle", theme.bold("ask_user_question ")) +
+          theme.fg("muted", `${questions.length} question${questions.length === 1 ? "" : "s"}`) +
+          (labels ? theme.fg("dim", ` (${labels})`) : ""),
+        0,
+        0,
+      );
+    },
+    renderResult(result, _options, theme) {
+      const details = result.details as AskUserQuestionResult | undefined;
+      if (details === undefined) {
+        const first = result.content[0];
+        return new Text(first?.type === "text" ? first.text : "", 0, 0);
+      }
+
+      if (details.status === "cancelled") {
+        const suffix = details.error !== undefined ? ` (${details.error})` : "";
+        return new Text(theme.fg("warning", `Cancelled${suffix}`), 0, 0);
+      }
+
+      if (details.status === "error") {
+        const suffix = details.error !== undefined ? ` (${details.error})` : "";
+        return new Text(theme.fg("error", `Invalid question${suffix}`), 0, 0);
+      }
+
+      const lines = details.answers.map((answer) => {
+        const value =
+          answer.kind === "multi" ? answer.selected.join(", ") : (answer.answer ?? "(no response)");
+        return `${theme.fg("success", "✓")} Q${answer.questionIndex + 1}: ${theme.fg("accent", value)}`;
+      });
+      return new Text(lines.join("\n"), 0, 0);
     },
   });
 }
 
-// Canonical runtime contract for human-visible text. The TypeBox schema types the
-// input and bounds tool-call arrays; this enforces non-blank fields for every
-// askUserQuestions caller (direct or via the tool) with model-readable messages.
-export function validateAskUserQuestionInput(input: AskUserQuestionInput): string[] {
-  const errors: string[] = [];
+export function validateAskUserQuestionInput(input: unknown): ValidationResult {
+  if (!isObjectRecord(input) || !Array.isArray(input.questions)) {
+    return invalidParams("Invalid ask_user_question parameters: questions must be an array.");
+  }
+  if (!hasOnlyKeys(input, ROOT_KEYS)) {
+    return invalidParams("Invalid ask_user_question parameters: unknown root property.");
+  }
 
-  input.questions.forEach((question, questionIndex) => {
-    const prefix = `questions[${questionIndex}]`;
+  const typed = input as AskUserQuestionInput;
+  if (typed.questions.length === 0) {
+    return { ok: false, error: "no_questions", message: "At least one question is required." };
+  }
+  if (typed.questions.length > MAX_QUESTIONS) {
+    return {
+      ok: false,
+      error: "too_many_questions",
+      message: `At most ${MAX_QUESTIONS} questions are allowed.`,
+    };
+  }
+
+  const seenQuestions = new Set<string>();
+  const reserved = new Set(RESERVED_LABELS.map(normalizeComparable));
+
+  for (const [questionIndex, question] of typed.questions.entries()) {
+    if (!isObjectRecord(question)) {
+      return invalidParams(
+        "Invalid ask_user_question parameters: each question must be an object.",
+      );
+    }
+    if (!hasOnlyKeys(question, QUESTION_KEYS)) {
+      return invalidParams(
+        `Invalid ask_user_question parameters: questions[${questionIndex}] contains unknown properties.`,
+      );
+    }
+    if (typeof question.question !== "string" || typeof question.header !== "string") {
+      return invalidParams(
+        "Invalid ask_user_question parameters: question and header must be strings.",
+      );
+    }
     if (question.question.trim().length === 0) {
-      errors.push(`${prefix}.question must not be empty.`);
+      return {
+        ok: false,
+        error: "empty_question",
+        message: `questions[${questionIndex}].question must not be empty.`,
+      };
     }
     if (question.header.trim().length === 0) {
-      errors.push(`${prefix}.header must not be empty.`);
+      return {
+        ok: false,
+        error: "empty_header",
+        message: `questions[${questionIndex}].header must not be empty.`,
+      };
     }
-    question.options.forEach((option, optionIndex) => {
-      const optionPrefix = `${prefix}.options[${optionIndex}]`;
-      if (option.label.trim().length === 0) {
-        errors.push(`${optionPrefix}.label must not be empty.`);
-      }
-      if (option.description.trim().length === 0) {
-        errors.push(`${optionPrefix}.description must not be empty.`);
-      }
-    });
-  });
+    if (question.header.length > MAX_HEADER_LENGTH) {
+      return invalidParams(
+        `questions[${questionIndex}].header must be at most ${MAX_HEADER_LENGTH} characters.`,
+      );
+    }
+    if (!Array.isArray(question.options)) {
+      return invalidParams("Invalid ask_user_question parameters: options must be an array.");
+    }
+    if (question.multiSelect !== undefined && typeof question.multiSelect !== "boolean") {
+      return invalidParams(
+        "Invalid ask_user_question parameters: multiSelect must be a boolean when provided.",
+      );
+    }
 
-  return errors;
+    const questionKey = normalizeComparable(question.question);
+    if (seenQuestions.has(questionKey)) {
+      return {
+        ok: false,
+        error: "duplicate_question",
+        message: `Duplicate question: ${question.question}`,
+      };
+    }
+    seenQuestions.add(questionKey);
+
+    if (question.options.length < MIN_OPTIONS) {
+      return {
+        ok: false,
+        error: "too_few_options",
+        message: `Question "${question.header}" must have at least ${MIN_OPTIONS} options.`,
+      };
+    }
+    if (question.options.length > MAX_OPTIONS) {
+      return {
+        ok: false,
+        error: "too_many_options",
+        message: `Question "${question.header}" must have at most ${MAX_OPTIONS} options.`,
+      };
+    }
+
+    const seenOptionLabels = new Set<string>();
+    for (const [optionIndex, option] of question.options.entries()) {
+      if (!isObjectRecord(option)) {
+        return invalidParams(
+          "Invalid ask_user_question parameters: each option must be an object.",
+        );
+      }
+      if (!hasOnlyKeys(option, OPTION_KEYS)) {
+        return invalidParams(
+          `Invalid ask_user_question parameters: questions[${questionIndex}].options[${optionIndex}] contains unknown properties.`,
+        );
+      }
+      if (typeof option.label !== "string" || typeof option.description !== "string") {
+        return invalidParams(
+          "Invalid ask_user_question parameters: option label and description must be strings.",
+        );
+      }
+      if (option.preview !== undefined && typeof option.preview !== "string") {
+        return invalidParams(
+          "Invalid ask_user_question parameters: option preview must be a string when provided.",
+        );
+      }
+
+      const labelKey = normalizeComparable(option.label);
+      if (option.label.trim().length === 0) {
+        return {
+          ok: false,
+          error: "empty_label",
+          message: `questions[${questionIndex}].options[${optionIndex}].label must not be empty.`,
+        };
+      }
+      if (option.label.length > MAX_LABEL_LENGTH) {
+        return invalidParams(
+          `questions[${questionIndex}].options[${optionIndex}].label must be at most ${MAX_LABEL_LENGTH} characters.`,
+        );
+      }
+      if (reserved.has(labelKey)) {
+        return {
+          ok: false,
+          error: "reserved_label",
+          message: `Option label "${option.label}" is reserved for runtime controls.`,
+        };
+      }
+      if (seenOptionLabels.has(labelKey)) {
+        return {
+          ok: false,
+          error: "duplicate_option_label",
+          message: `Duplicate option label in "${question.header}": ${option.label}`,
+        };
+      }
+      seenOptionLabels.add(labelKey);
+
+      if (option.description.trim().length === 0) {
+        return {
+          ok: false,
+          error: "empty_description",
+          message: `Option "${option.label}" must include a non-empty description.`,
+        };
+      }
+      if (question.multiSelect === true && option.preview?.trim()) {
+        return {
+          ok: false,
+          error: "preview_on_multiselect",
+          message: `Option previews are supported only for single-select questions: ${option.label}`,
+        };
+      }
+    }
+  }
+
+  return { ok: true };
 }
 
 export function formatAskUserQuestionResultForModel(result: AskUserQuestionResult): string {
   if (result.status === "error") {
-    return `${ASK_USER_QUESTION_TOOL_NAME} input was invalid:\n${result.errors.map((error) => `- ${error}`).join("\n")}`;
+    return `ask_user_question input was invalid:\n${result.errors.map((error) => `- ${error}`).join("\n")}`;
   }
 
   if (result.status === "cancelled") {
     return [
-      `${ASK_USER_QUESTION_TOOL_NAME} could not get an answer: ${result.reason}.`,
+      "The user cancelled the questionnaire. Do not assume an answer.",
       result.answers.length > 0 ? formatAnswers(result.answers) : undefined,
       result.pendingQuestions.length > 0
         ? `Pending questions: ${result.pendingQuestions.map((question) => question.header).join(", ")}`
@@ -264,22 +431,117 @@ export function formatAskUserQuestionResultForModel(result: AskUserQuestionResul
       .join("\n");
   }
 
-  return formatAnswers(result.answers);
+  return `Questionnaire completed.\n${formatAnswers(result.answers)}`;
+}
+
+export function completedResult(answers: readonly QuestionAnswer[]): AskUserQuestionResult {
+  return {
+    status: "completed",
+    answers,
+    pendingQuestions: [],
+  };
+}
+
+export function cancelledResult(
+  input: AskUserQuestionInput,
+  answers: readonly QuestionAnswer[] = [],
+): AskUserQuestionResult {
+  return {
+    status: "cancelled",
+    reason: "user_cancelled",
+    answers,
+    pendingQuestions: pendingQuestionsFrom(input, answers),
+  };
+}
+
+function errorResult(
+  input: unknown,
+  message: string,
+  error: AskUserQuestionValidationError,
+): AskUserQuestionResult {
+  return {
+    status: "error",
+    errors: [message],
+    pendingQuestions: safePendingQuestions(input),
+    error,
+  };
+}
+
+function pendingQuestionsFrom(
+  input: AskUserQuestionInput,
+  answers: readonly QuestionAnswer[],
+): AskUserQuestion[] {
+  const answered = new Set(answers.map((answer) => answer.questionIndex));
+  return input.questions.filter((_question, index) => !answered.has(index));
+}
+
+export function safePendingQuestions(input: unknown): AskUserQuestion[] {
+  if (!isObjectRecord(input) || !Array.isArray(input.questions)) {
+    return [];
+  }
+  return input.questions
+    .map(sanitizePendingQuestion)
+    .filter((question): question is AskUserQuestion => question !== undefined);
+}
+
+function sanitizePendingQuestion(value: unknown): AskUserQuestion | undefined {
+  if (
+    !isObjectRecord(value) ||
+    typeof value.question !== "string" ||
+    typeof value.header !== "string" ||
+    !Array.isArray(value.options) ||
+    (value.multiSelect !== undefined && typeof value.multiSelect !== "boolean")
+  ) {
+    return undefined;
+  }
+
+  const options = value.options.map(sanitizePendingOption);
+  if (options.some((option) => option === undefined)) {
+    return undefined;
+  }
+
+  return {
+    question: value.question,
+    header: value.header,
+    options: options as AskUserQuestion["options"],
+    ...(value.multiSelect !== undefined ? { multiSelect: value.multiSelect } : {}),
+  };
+}
+
+function sanitizePendingOption(value: unknown): AskUserQuestion["options"][number] | undefined {
+  if (
+    !isObjectRecord(value) ||
+    typeof value.label !== "string" ||
+    typeof value.description !== "string" ||
+    (value.preview !== undefined && typeof value.preview !== "string")
+  ) {
+    return undefined;
+  }
+
+  return {
+    label: value.label,
+    description: value.description,
+    ...(value.preview !== undefined ? { preview: value.preview } : {}),
+  };
 }
 
 function formatAnswers(answers: readonly QuestionAnswer[]): string {
-  const lines = ["User answers:"];
-  for (const answer of answers) {
-    if (answer.type === "freeform") {
-      lines.push(`- ${answer.header}: ${answer.text}`);
-      continue;
-    }
-
-    lines.push(
-      `- ${answer.header}: ${answer.selectedOptions.map((option) => option.label).join(", ")}`,
-    );
+  if (answers.length === 0) {
+    return "No answers were provided.";
   }
-  return lines.join("\n");
+
+  return answers
+    .map((answer) => {
+      const label = `Q${answer.questionIndex + 1}`;
+      if (answer.kind === "multi") {
+        return `${label}: User selected: ${answer.selected.join(", ")}`;
+      }
+      if (answer.kind === "custom") {
+        return `${label}: User wrote: ${answer.answer ?? "(no response)"}`;
+      }
+      return `${label}: User selected: ${answer.answer}`;
+    })
+    .join("\n");
 }
 
 async function askSingleQuestion(
@@ -296,7 +558,7 @@ async function askSingleQuestion(
   while (true) {
     const response = await adapter.readLine(
       question.multiSelect === true
-        ? "Select option numbers separated by commas, type a custom answer, or press Enter to cancel: "
+        ? "Select option numbers separated by commas, or press Enter to cancel: "
         : "Select an option number, type a custom answer, or press Enter to cancel: ",
     );
 
@@ -324,36 +586,53 @@ async function askSingleQuestion(
     }
 
     if (selectedIndexes.status === "selected") {
+      if (question.multiSelect === true) {
+        return {
+          status: "answered",
+          answer: {
+            questionIndex: index,
+            question: question.question,
+            kind: "multi",
+            answer: null,
+            selected: selectedIndexes.indexes.map((optionIndex) => {
+              const option = question.options[optionIndex];
+              if (option === undefined) {
+                throw new Error(`Internal option index out of range: ${optionIndex}`);
+              }
+              return option.label;
+            }),
+          },
+        };
+      }
+
+      const option = question.options[selectedIndexes.indexes[0] ?? -1];
+      if (option === undefined) {
+        throw new Error("Internal option index out of range.");
+      }
       return {
         status: "answered",
         answer: {
           questionIndex: index,
-          header: question.header,
           question: question.question,
-          type: "options",
-          selectedOptions: selectedIndexes.indexes.map((optionIndex) => {
-            const option = question.options[optionIndex];
-            if (option === undefined) {
-              throw new Error(`Internal option index out of range: ${optionIndex}`);
-            }
-            return {
-              index: optionIndex + 1,
-              label: option.label,
-              description: option.description,
-            };
-          }),
+          kind: "option",
+          answer: option.label,
+          ...(option.preview ? { preview: option.preview } : {}),
         },
       };
+    }
+
+    if (question.multiSelect === true) {
+      await adapter.write("Choose listed option numbers for multi-select questions.\n");
+      continue;
     }
 
     return {
       status: "answered",
       answer: {
         questionIndex: index,
-        header: question.header,
         question: question.question,
-        type: "freeform",
-        text: trimmed,
+        kind: "custom",
+        answer: trimmed,
       },
     };
   }
@@ -364,7 +643,7 @@ function formatQuestion(question: AskUserQuestion, index: number, total: number)
   const lines = [`\n${heading} [${question.header}] ${question.question}`];
 
   question.options.forEach((option, optionIndex) => {
-    lines.push(`  ${optionIndex + 1}. ${option.label} — ${option.description}`);
+    lines.push(`  ${optionIndex + 1}. ${option.label} - ${option.description}`);
     if (option.preview !== undefined && option.preview.trim().length > 0) {
       lines.push(indentPreview(option.preview));
     }
@@ -405,4 +684,17 @@ function parseSelectedIndexes(
   }
 
   return { status: "selected", indexes: Array.from(new Set(indexes)) };
+}
+
+function normalizeComparable(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const allowed = new Set(keys);
+  return Object.keys(value).every((key) => allowed.has(key));
+}
+
+function invalidParams(message: string): ValidationResult {
+  return { ok: false, error: "invalid_params", message };
 }

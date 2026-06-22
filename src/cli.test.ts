@@ -154,7 +154,7 @@ describe("main", () => {
   test("passes parsed options and repository root to the workflow without modifying git state", async () => {
     let stdout = "";
     let stderr = "";
-    const workflowCalls: Array<{ cwd: string; options: unknown }> = [];
+    const workflowCalls: Array<{ cwd: string; options: unknown; uiMode: unknown }> = [];
     const beforeStatus = await runGit(["status", "--short"], tempDir);
 
     const exitCode = await main(
@@ -175,8 +175,8 @@ describe("main", () => {
         },
       },
       {
-        runWorkflow: async ({ cwd, options }) => {
-          workflowCalls.push({ cwd, options });
+        runWorkflow: async ({ cwd, options, uiMode }) => {
+          workflowCalls.push({ cwd, options, uiMode });
         },
       },
     );
@@ -189,9 +189,34 @@ describe("main", () => {
     expect(workflowCalls).toEqual([
       {
         options: { language: "english", branch: true, base: "main" },
+        uiMode: "plain",
         cwd: await realpath(tempDir),
       },
     ]);
     expect(afterStatus).toBe(beforeStatus);
+  });
+
+  test("uses TUI mode for interactive runs", async () => {
+    const workflowCalls: Array<{ uiMode: unknown }> = [];
+
+    const exitCode = await main([], tempDir, undefined, {
+      isInteractive: () => true,
+      runWorkflow: async ({ uiMode }) => {
+        workflowCalls.push({ uiMode });
+      },
+    });
+
+    expect(exitCode).toBe(0);
+    expect(workflowCalls).toEqual([{ uiMode: "tui" }]);
+  });
+
+  test("maps workflow cancellation to exit code 130", async () => {
+    const exitCode = await main([], tempDir, undefined, {
+      runWorkflow: async () => {
+        throw { exitCode: 130 };
+      },
+    });
+
+    expect(exitCode).toBe(130);
   });
 });

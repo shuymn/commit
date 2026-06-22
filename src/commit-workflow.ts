@@ -6,6 +6,7 @@ import {
   type QuestionPromptAdapter,
 } from "./ask-user-question";
 import type { CommitOptions } from "./commit-options";
+import { CommitTuiRuntime, CommitWorkflowCancelledError } from "./commit-tui";
 import {
   COMMIT_AGENT_TOOL_NAMES,
   createCommitAgentSession,
@@ -30,6 +31,7 @@ export type CommitWorkflowSessionFactory = (options: CommitAgentSessionOptions) 
 export type RunCommitWorkflowOptions = {
   readonly cwd: string;
   readonly options: CommitOptions;
+  readonly uiMode?: "tui" | "plain";
   readonly io?: CommitWorkflowIo;
   readonly env?: Record<string, string | undefined>;
   readonly createSession?: CommitWorkflowSessionFactory;
@@ -39,7 +41,25 @@ export type RunCommitWorkflowOptions = {
 export async function runCommitWorkflow(options: RunCommitWorkflowOptions): Promise<void> {
   const io = options.io ?? { stdout: process.stdout, stderr: process.stderr };
   const createSession = options.createSession ?? createCommitAgentSession;
-  const questionTool = createAskUserQuestionTool(options.questionPromptAdapter);
+  let tuiRuntime: CommitTuiRuntime | undefined;
+  const questionTool = createAskUserQuestionTool(
+    options.uiMode === "tui"
+      ? {
+          presenter: async (input) => {
+            if (tuiRuntime === undefined) {
+              return {
+                status: "cancelled",
+                reason: "no_ui",
+                answers: [],
+                pendingQuestions: input.questions,
+                error: "no_ui",
+              };
+            }
+            return await tuiRuntime.presenter(input);
+          },
+        }
+      : { promptAdapter: options.questionPromptAdapter },
+  );
   const sessionResult = await createSession({
     cwd: options.cwd,
     env: options.env ?? process.env,
@@ -47,6 +67,38 @@ export async function runCommitWorkflow(options: RunCommitWorkflowOptions): Prom
     toolNames: [...COMMIT_AGENT_TOOL_NAMES, ASK_USER_QUESTION_TOOL_NAME],
   });
   const { session, modelFallbackMessage } = sessionResult;
+
+  if (options.uiMode === "tui") {
+    tuiRuntime = new CommitTuiRuntime({
+      cwd: options.cwd,
+      toolDefinitions: [questionTool],
+    });
+    await runCommitWorkflowWithTui({
+      session,
+      runtime: tuiRuntime,
+      modelFallbackMessage,
+      prompt: buildCommitSkillPrompt(options.options),
+    });
+    return;
+  }
+
+  await runCommitWorkflowPlain({
+    session,
+    io,
+    modelFallbackMessage,
+    prompt: buildCommitSkillPrompt(options.options),
+  });
+}
+
+type RunCommitWorkflowPlainOptions = {
+  readonly session: CommitWorkflowSession;
+  readonly io: CommitWorkflowIo;
+  readonly modelFallbackMessage?: string;
+  readonly prompt: string;
+};
+
+async function runCommitWorkflowPlain(options: RunCommitWorkflowPlainOptions): Promise<void> {
+  const { session, io, modelFallbackMessage, prompt } = options;
   // The question tool terminates the session on failure; we record the first
   // failure here and rethrow it once the prompt loop has finished.
   let firstQuestionToolFailure: string | undefined;
@@ -59,13 +111,76 @@ export async function runCommitWorkflow(options: RunCommitWorkflowOptions): Prom
     if (modelFallbackMessage !== undefined) {
       io.stderr.write(`Note: ${modelFallbackMessage}\n`);
     }
-    await session.prompt(buildCommitSkillPrompt(options.options));
+    await session.prompt(prompt);
     if (firstQuestionToolFailure !== undefined) {
       throw new Error(firstQuestionToolFailure);
     }
   } finally {
     unsubscribe();
     session.dispose();
+  }
+}
+
+type RunCommitWorkflowWithTuiOptions = {
+  readonly session: CommitWorkflowSession;
+  readonly runtime: CommitTuiRuntime;
+  readonly modelFallbackMessage?: string;
+  readonly prompt: string;
+};
+
+async function runCommitWorkflowWithTui(options: RunCommitWorkflowWithTuiOptions): Promise<void> {
+  const { session, runtime, modelFallbackMessage, prompt } = options;
+  let firstQuestionToolFailure: string | undefined;
+  let runtimeStarted = false;
+  const unsubscribe = session.subscribe((event) => {
+    runtime.handleEvent(event);
+    firstQuestionToolFailure ??= getQuestionToolFailure(event);
+  });
+
+  try {
+    runtime.start();
+    runtimeStarted = true;
+    if (modelFallbackMessage !== undefined) {
+      runtime.addNotice(`Note: ${modelFallbackMessage}`);
+    }
+
+    const promptResult = session.prompt(prompt).then(
+      () => ({ kind: "completed" as const }),
+      (error: unknown) => ({ kind: "failed" as const, error }),
+    );
+    const result = await Promise.race([
+      promptResult,
+      runtime.cancelled.then(() => ({ kind: "cancelled" as const })),
+    ]);
+
+    if (result.kind === "cancelled") {
+      runtime.setStatus("cancelled");
+      throw new CommitWorkflowCancelledError();
+    }
+    if (result.kind === "failed") {
+      runtime.setStatus("failed");
+      throw result.error;
+    }
+    if (firstQuestionToolFailure !== undefined) {
+      runtime.setStatus("failed");
+      throw new Error(firstQuestionToolFailure);
+    }
+    runtime.setStatus("completed");
+  } catch (error) {
+    if (runtimeStarted && !(error instanceof CommitWorkflowCancelledError)) {
+      runtime.setStatus("failed");
+    }
+    throw error;
+  } finally {
+    if (runtimeStarted) {
+      await runtime.flushRender();
+    }
+    unsubscribe();
+    try {
+      runtime.stop();
+    } finally {
+      session.dispose();
+    }
   }
 }
 
@@ -94,11 +209,11 @@ export function getQuestionToolFailure(event: AgentSessionEvent): string | undef
 
   const result = toAskUserQuestionResult(extractToolResultDetails(event.result));
   if (result?.status === "cancelled") {
-    return `Question required but no answer was available (${result.reason}).`;
+    return `Question required but no answer was available (${result.error ?? result.reason}).`;
   }
 
   if (result?.status === "error") {
-    return `Question tool failed: ${result.errors.join("; ")}`;
+    return `Question tool failed${result.error !== undefined ? ` (${result.error})` : ""}: ${result.errors.join("; ")}`;
   }
 
   if (event.isError) {

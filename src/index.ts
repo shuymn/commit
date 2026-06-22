@@ -4,11 +4,12 @@ import { formatUsage, parseCliArgs } from "./cli";
 import { resolveGitRepositoryCwd } from "./git";
 
 export type WorkflowRunner = (
-  input: Pick<RunCommitWorkflowOptions, "cwd" | "options" | "io">,
+  input: Pick<RunCommitWorkflowOptions, "cwd" | "options" | "io" | "uiMode">,
 ) => Promise<void>;
 
 export type MainDependencies = {
   readonly runWorkflow?: WorkflowRunner;
+  readonly isInteractive?: () => boolean;
 };
 
 export async function main(
@@ -37,9 +38,13 @@ export async function main(
       cwd: repository.cwd,
       options: parsed.options,
       io,
+      uiMode: (dependencies.isInteractive?.() ?? isProcessInteractive()) ? "tui" : "plain",
     });
     return 0;
   } catch (error) {
+    if (isExitCodeError(error, 130)) {
+      return 130;
+    }
     io.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
   }
@@ -47,4 +52,17 @@ export async function main(
 
 if (import.meta.main) {
   process.exitCode = await main();
+}
+
+function isProcessInteractive(): boolean {
+  return process.stdin.isTTY === true && process.stdout.isTTY === true;
+}
+
+function isExitCodeError(error: unknown, exitCode: number): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "exitCode" in error &&
+    (error as { readonly exitCode?: unknown }).exitCode === exitCode
+  );
 }
