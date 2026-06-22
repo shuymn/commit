@@ -12,6 +12,7 @@ import {
   type ModelRegistry,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import { isObjectRecord } from "./tool-result";
 
 export const COMMIT_SKILL_PATH_ENV = "COMMIT_SKILL_PATH";
 export const COMMIT_AGENT_TOOL_NAMES = ["read", "bash", "grep", "find", "ls"] as const;
@@ -46,7 +47,10 @@ export type CommitAgentSessionResult = CreateAgentSessionResult & CommitAgentRes
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 
 const defaultCommitSkillCandidates = [
+  // Bundled layout: skill ships inside this package (packageRoot/skills/commit).
   resolve(packageRoot, "skills/commit/SKILL.md"),
+  // Installed-as-dependency layout: packageRoot is node_modules/<pkg>, so the
+  // sibling "skills" package resolves to node_modules/skills/commit.
   resolve(packageRoot, "../skills/skills/commit/SKILL.md"),
 ];
 
@@ -56,22 +60,33 @@ export async function resolveCommitSkillPath(
   const explicitPath = options.skillPath ?? options.env?.[COMMIT_SKILL_PATH_ENV];
   const candidates = explicitPath === undefined ? defaultCommitSkillCandidates : [explicitPath];
 
+  // A real I/O fault on one candidate (e.g. EACCES) must not skip the remaining
+  // candidates or the guidance below; remember the first fault and surface it as
+  // the error cause once every candidate has been tried.
+  let resolutionError: unknown;
   for (const candidate of candidates) {
     const resolved = resolve(candidate);
-    const skillFile = await resolveSkillFile(resolved);
-    if (skillFile !== undefined) {
-      return skillFile;
+    try {
+      const skillFile = await resolveSkillFile(resolved);
+      if (skillFile !== undefined) {
+        return skillFile;
+      }
+    } catch (error) {
+      resolutionError ??= error;
     }
   }
 
   if (explicitPath !== undefined) {
-    throw new Error(`Commit skill not found at ${resolve(explicitPath)}`);
+    throw new Error(`Commit skill not found at ${resolve(explicitPath)}`, {
+      cause: resolutionError,
+    });
   }
 
   throw new Error(
     `Commit skill not found. Set ${COMMIT_SKILL_PATH_ENV} to the commit skill directory or SKILL.md file. Tried:\n${defaultCommitSkillCandidates
       .map((candidate) => `- ${candidate}`)
       .join("\n")}`,
+    { cause: resolutionError },
   );
 }
 
@@ -146,9 +161,16 @@ async function resolveSkillFile(path: string): Promise<string | undefined> {
     if (stats.isFile() && path.endsWith(".md")) {
       return path;
     }
-  } catch {
-    return undefined;
+  } catch (error) {
+    if (isMissingFileError(error)) {
+      return undefined;
+    }
+    throw error;
   }
 
   return undefined;
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return isObjectRecord(error) && (error.code === "ENOENT" || error.code === "ENOTDIR");
 }
