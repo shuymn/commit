@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline/promises";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
+import { isObjectRecord } from "./tool-result";
 
 export const ASK_USER_QUESTION_TOOL_NAME = "ask_user_question";
 
@@ -80,28 +81,27 @@ export type AskUserQuestionResult =
       readonly errors: readonly string[];
     };
 
-type AskUserQuestionFailureResult = Extract<
-  AskUserQuestionResult,
-  { status: "cancelled" | "error" }
->;
+// Failure shape consumed by the workflow. Narrowed to exactly the fields read
+// by callers so the decoder validates everything it returns (no wider cast).
+export type QuestionToolFailure =
+  | { readonly status: "cancelled"; readonly reason: string }
+  | { readonly status: "error"; readonly errors: readonly string[] };
 
-export function toAskUserQuestionResult(
-  details: unknown,
-): AskUserQuestionFailureResult | undefined {
+export function toAskUserQuestionResult(details: unknown): QuestionToolFailure | undefined {
   if (!isObjectRecord(details) || typeof details.status !== "string") {
     return undefined;
   }
 
   if (details.status === "cancelled" && typeof details.reason === "string") {
-    return details as AskUserQuestionFailureResult;
+    return { status: "cancelled", reason: details.reason };
   }
 
   if (
     details.status === "error" &&
     Array.isArray(details.errors) &&
-    details.errors.every((error) => typeof error === "string")
+    details.errors.every((error): error is string => typeof error === "string")
   ) {
-    return details as AskUserQuestionFailureResult;
+    return { status: "error", errors: details.errors };
   }
 
   return undefined;
@@ -158,13 +158,9 @@ export function createTerminalQuestionPromptAdapter(
 }
 
 function isInputClosedError(error: unknown): boolean {
-  return (
-    error instanceof Error && (error.name === "AbortError" || /closed|eof/i.test(error.message))
-  );
-}
-
-function isObjectRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+  // Only treat the readline abort signal as a clean close; let any other
+  // rejection surface instead of guessing from the message text.
+  return isObjectRecord(error) && error.name === "AbortError";
 }
 
 export async function askUserQuestions(
@@ -223,6 +219,9 @@ export function createAskUserQuestionTool(
   });
 }
 
+// Canonical runtime contract for human-visible text. The TypeBox schema types the
+// input and bounds tool-call arrays; this enforces non-blank fields for every
+// askUserQuestions caller (direct or via the tool) with model-readable messages.
 export function validateAskUserQuestionInput(input: AskUserQuestionInput): string[] {
   const errors: string[] = [];
 
