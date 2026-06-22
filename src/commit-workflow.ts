@@ -6,7 +6,7 @@ import {
   toAskUserQuestionResult,
   type QuestionPromptAdapter,
 } from "./ask-user-question";
-import type { CliOptions } from "./cli";
+import type { CommitOptions } from "./commit-options";
 import {
   COMMIT_AGENT_TOOL_NAMES,
   createCommitAgentSession,
@@ -31,7 +31,7 @@ export type CommitWorkflowSessionFactory = (options: CommitAgentSessionOptions) 
 
 export type RunCommitWorkflowOptions = {
   readonly cwd: string;
-  readonly options: CliOptions;
+  readonly options: CommitOptions;
   readonly io?: CommitWorkflowIo;
   readonly env?: Record<string, string | undefined>;
   readonly createSession?: CommitWorkflowSessionFactory;
@@ -69,7 +69,7 @@ export async function runCommitWorkflow(options: RunCommitWorkflowOptions): Prom
   }
 }
 
-export function buildCommitSkillPrompt(options: CliOptions): string {
+export function buildCommitSkillPrompt(options: CommitOptions): string {
   const args: string[] = [];
   if (options.language === "english") {
     args.push("--english");

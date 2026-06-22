@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { runCommandWithBun } from "./cli";
+import { runCommandWithBun } from "./command";
 import { main } from "./index";
 
 const runGit = async (args: readonly string[], cwd: string) => {

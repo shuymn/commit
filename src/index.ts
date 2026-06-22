@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import type { CommitWorkflowIo, RunCommitWorkflowOptions } from "./commit-workflow";
-import { formatUsage, parseCliArgs, resolveGitRepositoryCwd } from "./cli";
+import { formatUsage, parseCliArgs } from "./cli";
+import { resolveGitRepositoryCwd } from "./git";
 
 export type WorkflowRunner = (
   input: Pick<RunCommitWorkflowOptions, "cwd" | "options" | "io">,

@@ -2,14 +2,9 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import {
-  formatUsage,
-  parseCliArgs,
-  resolveGitRepositoryCwd,
-  runCommandWithBun,
-  UNSAFE_BASE_BRANCH_MESSAGE,
-  type CommandRunner,
-} from "./cli";
+import { type CommandRunner, runCommandWithBun } from "./command";
+import { formatUsage, parseCliArgs, UNSAFE_BASE_BRANCH_MESSAGE } from "./cli";
+import { resolveGitRepositoryCwd } from "./git";
 import { main } from "./index";
 
 const makeRunner = (result: {

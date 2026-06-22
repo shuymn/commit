@@ -1,27 +1,9 @@
-export type CommitLanguage = "english" | "japanese";
-
-export type CliOptions = {
-  readonly language?: CommitLanguage;
-  readonly branch: boolean;
-  readonly base?: string;
-};
+import type { CommitLanguage, CommitOptions } from "./commit-options";
 
 export type CliParseResult =
-  | { readonly kind: "run"; readonly options: CliOptions }
+  | { readonly kind: "run"; readonly options: CommitOptions }
   | { readonly kind: "help" }
   | { readonly kind: "error"; readonly message: string };
-
-export type CommandResult = {
-  readonly exitCode: number;
-  readonly stdout: string;
-  readonly stderr: string;
-};
-
-export type CommandRunner = (command: readonly string[], cwd: string) => Promise<CommandResult>;
-
-export type ResolvedRepository = {
-  readonly cwd: string;
-};
 
 const USAGE = `Usage: commit [options]
 
@@ -87,23 +69,19 @@ export function parseCliArgs(argv: readonly string[]): CliParseResult {
       continue;
     }
 
-    if (arg === "--base") {
-      const next = argv[index + 1];
-      if (next === undefined || next.startsWith("-")) {
-        return { kind: "error", message: "--base requires a branch name." };
+    if (arg === "--base" || arg.startsWith("--base=")) {
+      let value: string | undefined;
+      if (arg === "--base") {
+        const next = argv[index + 1];
+        if (next !== undefined && !next.startsWith("-")) {
+          value = next;
+          index += 1;
+        }
+      } else {
+        value = arg.slice("--base=".length);
       }
-      const baseError = validateBaseBranchName(next);
-      if (baseError !== undefined) {
-        return { kind: "error", message: baseError };
-      }
-      base = next;
-      index += 1;
-      continue;
-    }
 
-    if (arg.startsWith("--base=")) {
-      const value = arg.slice("--base=".length);
-      if (value.length === 0) {
+      if (value === undefined || value.length === 0) {
         return { kind: "error", message: "--base requires a branch name." };
       }
       const baseError = validateBaseBranchName(value);
@@ -126,43 +104,4 @@ export function parseCliArgs(argv: readonly string[]): CliParseResult {
   }
 
   return { kind: "run", options: { language, branch, base } };
-}
-
-export async function resolveGitRepositoryCwd(
-  cwd: string,
-  runCommand: CommandRunner = runCommandWithBun,
-): Promise<ResolvedRepository> {
-  const result = await runCommand(["git", "rev-parse", "--show-toplevel"], cwd);
-
-  if (result.exitCode !== 0) {
-    const detail = result.stderr.trim();
-    const suffix = detail.length > 0 ? `\n${detail}` : "";
-    throw new Error(`Current directory is not inside a git repository: ${cwd}${suffix}`);
-  }
-
-  const repositoryCwd = result.stdout.trim();
-  if (repositoryCwd.length === 0) {
-    throw new Error(`Could not determine git repository root for: ${cwd}`);
-  }
-
-  return { cwd: repositoryCwd };
-}
-
-export async function runCommandWithBun(
-  command: readonly string[],
-  cwd: string,
-): Promise<CommandResult> {
-  const subprocess = Bun.spawn([...command], {
-    cwd,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-
-  const [exitCode, stdout, stderr] = await Promise.all([
-    subprocess.exited,
-    new Response(subprocess.stdout).text(),
-    new Response(subprocess.stderr).text(),
-  ]);
-
-  return { exitCode, stdout, stderr };
 }
