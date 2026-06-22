@@ -175,6 +175,7 @@ describe("main", () => {
         },
       },
       {
+        isInteractive: () => false,
         runWorkflow: async ({ cwd, options, uiMode }) => {
           workflowCalls.push({ cwd, options, uiMode });
         },
